@@ -3,7 +3,7 @@
 
 # [toc]
 # 
-# # ML 学习笔记-7-XGBoost-3 Python 实战
+# # ML 学习笔记-7-XGBoost-3 Python 实战-1 BaseLearner的实现
 
 # 说了这么多，还是来进行 XGBoost 实战吧。
 
@@ -18,7 +18,7 @@
 #     1. 损失函数是什么？
 #     根据 XGBoost 的原论文，根据下式来进行节点分裂。
 #         $$
-#         L_{s p l i t}= - \frac{1}{2}\left[\frac{G_{L}^{2}}{H_{L}+\lambda}+\frac{G_{R}^{2}}{H_{R}+\lambda}-\frac{G_{I}^{2}}{H_{I}+\lambda}\right]-\gamma
+#         L_{s p l i t}= \frac{1}{2}\left[\frac{G_{L}^{2}}{H_{L}+\lambda}+\frac{G_{R}^{2}}{H_{R}+\lambda}-\frac{G_{I}^{2}}{H_{I}+\lambda}\right]-\gamma
 #         $$
 #     由于 $\gamma$ 是一个常数，因此可以省略。1 / 2 也是常数，省略它也不会影响最优分割点的选择。
 #     
@@ -32,16 +32,17 @@
 # w = -\frac{G_I}{H_I+\lambda}
 # $$
 
+# ## 损失函数类
+
 # 和 GBDT 一样，XGBoost 可以自定义损失函数，并且需要使用损失函数的一阶、二阶信息，因此先定义好一个可以计算一阶、二阶信息的损失函数
 # 
 # 我们定义一个损失函数的类，然后继承这个类
 
 # In[1]:
 
+
 import numpy as np
 from matplotlib import pyplot as plt
-
-
 class Loss:
     def predict(self, y, yhat):
         pass
@@ -69,18 +70,43 @@ class MSE(Loss):
     def hessian(self, y, yhat):
         return np.ones_like(y) / y.shape[0]
 
+
 # In[3]:
+
+class CrossEntropyWithLogits(Loss):
+    
+    @staticmethod
+    def softmax(x):
+        c = np.max(x, axis=0)
+        exp_x = np.exp(x-c) 
+        sum_x = np.sum(exp_x, axis=0)
+        return exp_x / (sum_x + 10-5)
+        
+    
+    def predict(self, y, logits):
+        return -np.mean(np.sum(y * np.log(CrossEntropyWithLogits.softmax(logits)), axis=0))
+
+    def gradient(self, y, logits):
+        return (logits - y) / y.shape[0]
+
+    def hessian(self, y, logits):
+        return np.ones_like(y) / y.shape[0]
+
+
+# ## 结点类
+
+# In[4]:
 
 
 class TreeNode:
-    def __init__(self, split_feat_idx=None, split_feat_val=None, left=None, right=None, depth=None, output=None):
+    def __init__(self, split_feat_idx =None,  split_feat_val=None, left=None, right=None, depth=None, output=None):
         self.split_feat_idx = split_feat_idx
         self.split_feat_val = split_feat_val
         self.output = output
         self.depth = depth
         self.left = left
         self.right = right
-
+        
     # 定义一个 __str__ 便于 print
     def __str__(self):
         return f"""{{
@@ -89,13 +115,15 @@ class TreeNode:
             right: {self.right}}}"""
 
 
-# In[8]:
+# In[5]:
+
 
 
 class XGBoostBaseLearner:
-
-    def __init__(self, lambda_=0, gamma=0, max_depth=10, min_err_decrease=1e-5, min_samples_split=2):
-        self.loss = MSE()
+    def __init__(self, loss=None, lambda_=0, gamma=0, max_depth=10, min_err_decrease=1e-5, min_samples_split=2):
+        self.loss = loss
+        if self.loss is None:
+            self.loss = MSE()
         self.lambda_ = lambda_
         self.gamma = gamma
         self.tree = None
@@ -103,14 +131,14 @@ class XGBoostBaseLearner:
         self.min_err_decrease = min_err_decrease
         self.min_samples_split = min_samples_split
         self.cached_data = None
-        self.depth = -1
+        self.depth = 0 # 回归树的深度
 
     def split(self, data, split_feat_idx, split_sample_idx):
         split_idx = list(data['features'][split_feat_idx]).index(split_sample_idx)
 
         left_data, right_data = {'features': {}}, {'features': {}}
 
-        left_data['sample_idx'] = data['features'][split_feat_idx][:split_idx + 1]
+        left_data['sample_idx'] = data['features'][split_feat_idx][:split_idx+1]
         right_data['sample_idx'] = data['features'][split_feat_idx][split_idx+1:]
 
         left_data['n_samples'] = left_data['sample_idx'].shape[0]
@@ -157,12 +185,14 @@ class XGBoostBaseLearner:
 
     def create_tree(self, data, depth=1):
         root = TreeNode(depth=depth)
+        # 节点对应的样本数过少或者树的深度过深
         if data['n_samples'] < self.min_samples_split or depth > self.max_depth:
             root.output = self.compute_output(data)
             self.depth = max(self.depth, depth)
             return root
 
         split_feat_idx, split_sample_idx, best_err_decrease = self.choose_best_split_feature(data)
+        # 节点的 loss 减少过小
         if best_err_decrease < self.min_err_decrease:
             root.output = self.compute_output(data)
             self.depth = max(self.depth, depth)
@@ -172,7 +202,6 @@ class XGBoostBaseLearner:
         root.split_feat_val = self.cached_data['X'][split_sample_idx, split_feat_idx]
 
         left_data, right_data =  self.split(data, split_feat_idx, split_sample_idx)
-
         root.left = self.create_tree(left_data, depth=depth + 1)
         root.right = self.create_tree(right_data, depth=depth + 1)
         return root
@@ -183,15 +212,15 @@ class XGBoostBaseLearner:
 
     def preprocess(self, X, y, yhat):
         """
-        对每个特征进行预排序
+        对建立 cache_data
         :param X:
         :return:
         """
         if yhat is None:
             yhat = np.zeros_like(y)
-
-
-        self.cached_data= { 'X': X,
+            
+        self.cached_data= { 
+            'X': X,
             'y': y,
             'yhat': yhat,
             'gradient': self.loss.gradient(y, yhat),
@@ -199,8 +228,11 @@ class XGBoostBaseLearner:
         }
 
         n_samples, n_features = X.shape
-
+    
+        # 用一个 dict 来表示 data
+        # 这个 data 只保存样本的索引，而不保存值
         data = dict()
+        # 这里使用 np.argsort 只排序 index，不排序原来的数据
         data['features'] = {feat_idx: np.argsort(self.cached_data['X'][:, feat_idx]) for feat_idx in range(n_features)}
         data['n_samples'], data['n_features'] = n_samples, n_features
         data['sample_idx'] = np.arange(n_samples)
@@ -210,11 +242,10 @@ class XGBoostBaseLearner:
         data = self.preprocess(X, y, yhat)
         self.tree = self.create_tree(data, depth=1)
 
-    def predict(self, X):
-        yhat = np.array([self._predict(self.tree, x) for x in X])
-        return yhat
-
     def _predict(self, node, x):
+        """
+        对一个样本进行预测
+        """
         if not node.left and not node.right:
             return node.output
         if x[node.split_feat_idx] <= node.split_feat_val:
@@ -223,25 +254,98 @@ class XGBoostBaseLearner:
             return self._predict(node.right, x)
 
 
-# In[9]:
+    def predict(self, X):
+        yhat = np.array([self._predict(self.tree, x) for x in X])
+        return yhat
 
 
-from sklearn.datasets import load_boston
+# ## 测试
 
-data = load_boston()
-X, y = data['data'], data['target']
-with open("ex0.txt") as f:
-    data = np.array([list(map(float, line.strip().split())) for line in f])
-    X = data[:, 0][:, np.newaxis]
-    y = data[:, 1]
+# In[6]:
 
-bst = XGBoostBaseLearner(max_depth=10)
-bst.fit(X, y)
 
-yhat = bst.predict(X)
-print(f"mse: {MSE()(y, yhat)}")
-plt.scatter(X, y, label='y')
-plt.scatter(X, yhat, label='yhat')
-plt.legend()
-plt.show()
+if __name__ == "__main__":
+    with open("ex0.txt") as f:
+        data = np.array([list(map(float, line.strip().split())) for line in f])
+        X = data[:, 0][:, np.newaxis]
+        y = data[:, 1]
+
+    bst = XGBoostBaseLearner(max_depth=10)
+    bst.fit(X, y)
+
+    yhat = bst.predict(X)
+    print(f"mse: {MSE()(y, yhat)}")
+    plt.scatter(X, y, label='y')
+    plt.scatter(X, yhat, label='yhat')
+    plt.legend()
+    plt.show()
+
+
+# In[13]:
+
+
+if __name__ == "__main__":
+    from sklearn.datasets import load_iris
+    from sklearn.preprocessing import OneHotEncoder
+    data = load_iris()
+    X = data['data']
+    y = data['target']
+    y_onehot = OneHotEncoder(sparse=False).fit_transform(y[np.newaxis, :])
+    
+    bst = XGBoostBaseLearner(loss=CrossEntropyWithLogits())
+    yhat = bst.fit(X, y_onehot)
+    acc = np.mean(np.argmax(yhat) == np.argmax(y))
+
+
+# In[7]:
+
+
+class XGBoost:
+    def __init__(self, regression=True, n_estimator=3, **params):
+        self.n_estimator = n_estimator
+        self.regression = regression
+        self.loss = MSE() if regression else CrossEntropyWithLogits()
+        self.trees = [
+            XGBoostBaseLearner(loss=self.loss, **params) for _ in range(self.n_estimator)
+        ]
+        
+    def fit(self, X, y):
+        yhat = np.zeros_like(y)
+        for tree in self.trees:
+            tree.fit(X, y, yhat)
+            yhat += tree.predict(X)
+        return self
+    
+    def predict(self, X):
+        n_samples = X.shape[0]
+        yhat = np.zeros((n_samples,))
+        for tree in self.trees:
+            yhat += tree.predict(X)
+        return yhat
+
+
+# In[12]:
+
+
+if __name__ == "__main__":
+    with open("ex0.txt") as f:
+        data = np.array([list(map(float, line.strip().split())) for line in f])
+        X = data[:, 0][:, np.newaxis]
+        y = data[:, 1]
+
+    bst = XGBoost()
+    bst.fit(X, y)
+
+    yhat = bst.predict(X)
+    print(f"mse: {MSE()(y, yhat)}")
+    plt.scatter(X, y, label='y')
+    plt.scatter(X, yhat, label='yhat')
+    plt.legend()
+    plt.show()
+
+
+# In[ ]:
+
+
+
 
