@@ -119,12 +119,9 @@ class TreeNode:
 # In[5]:
 
 
-
 class XGBoostBaseLearner:
-    def __init__(self, loss=None, lambda_=10e-5, gamma=0, max_depth=10, min_err_decrease=1e-5, min_samples_split=2):
+    def __init__(self, loss=MSE(), lambda_=10e-5, gamma=0, max_depth=10, min_err_decrease=1e-5, min_samples_split=2):
         self.loss = loss
-        if self.loss is None:
-            self.loss = MSE()
         self.lambda_ = lambda_
         self.gamma = gamma
         self.tree = None
@@ -182,15 +179,11 @@ class XGBoostBaseLearner:
                 loss_L =  - G_L ** 2 / (H_L + self.lambda_)
                 loss_R =   - G_R ** 2 / (H_R + self.lambda_)
                 err_decrease = loss_before_split - (loss_L + loss_R) + 2 * self.gamma
-                if self.n_classes is not None:
-                    if np.any(err_decrease > best_err_decrease):
+                err_decrease = np.sum(err_decrease)
+                if err_decrease > best_err_decrease:
                         best_err_decrease = err_decrease
                         best_split_feat_idx = feat_idx
                         best_split_sample_idx = sample_j
-                else:
-                    best_err_decrease = err_decrease
-                    best_split_feat_idx = feat_idx
-                    best_split_sample_idx = sample_j
 
         return best_split_feat_idx, best_split_sample_idx, best_err_decrease
 
@@ -204,13 +197,7 @@ class XGBoostBaseLearner:
 
         split_feat_idx, split_sample_idx, best_err_decrease = self.choose_best_split_feature(data)
         # 节点的 loss 减少过小
-        if self.n_classes is not None:
-            if np.any(best_err_decrease < self.min_err_decrease):
-                root.output = self.compute_output(data)
-                self.depth = max(self.depth, depth)
-                return root
-        else:
-            if best_err_decrease < self.min_err_decrease:
+        if best_err_decrease < self.min_err_decrease:
                 root.output = self.compute_output(data)
                 self.depth = max(self.depth, depth)
                 return root
@@ -281,6 +268,7 @@ class XGBoostBaseLearner:
 
 # In[6]:
 
+
 if __name__ == "__main__":
     with open("ex0.txt") as f:
         data = np.array([list(map(float, line.strip().split())) for line in f])
@@ -297,8 +285,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.show()
 
-
-# In[ ]:
+# In[46]:
 
 
 if __name__ == "__main__":
@@ -308,22 +295,23 @@ if __name__ == "__main__":
     X = data['data']
     y = data['target']
     y_onehot = OneHotEncoder(sparse=False).fit_transform(y[:, np.newaxis])
-    
-    bst = XGBoostBaseLearner(loss=CrossEntropyWithLogits())
+
+    bst = XGBoostBaseLearner(loss=CrossEntropyWithLogits(), max_depth=5)
     bst.fit(X, y_onehot)
     yhat = bst.predict(X)
     acc = np.mean(np.argmax(yhat, axis=1) == y)
     print(f"acc: {acc}")
 
 
-# In[ ]:
+# In[24]:
 
 
 class XGBoost:
-    def __init__(self, regression=True, n_estimator=3, **params):
+    def __init__(self, regression=True, n_estimator=3, n_classes=None, **params):
         self.n_estimator = n_estimator
         self.regression = regression
         self.loss = MSE() if regression else CrossEntropyWithLogits()
+        self.n_classes = n_classes
         self.trees = [
             XGBoostBaseLearner(loss=self.loss, **params) for _ in range(self.n_estimator)
         ]
@@ -337,13 +325,36 @@ class XGBoost:
     
     def predict(self, X):
         n_samples = X.shape[0]
-        yhat = np.zeros((n_samples,))
+        if self.regression:
+            yhat = np.zeros((n_samples,))
+        else:
+            yhat = np.zeros((n_samples, self.n_classes))
         for tree in self.trees:
             yhat += tree.predict(X)
         return yhat
 
+# In[28]:
 
-# In[ ]:
+
+if __name__ == "__main__":
+    from sklearn.datasets import load_iris
+    from sklearn.preprocessing import OneHotEncoder
+    data = load_iris()
+
+    X = data['data']
+    y = data['target']
+    y_onehot = OneHotEncoder(sparse=False).fit_transform(y[:, np.newaxis])
+    n_classes = y_onehot.shape[1]
+    
+    bst = XGBoost(regression=False, n_classes=n_classes, max_depth=10)
+    bst.fit(X, y_onehot)
+    yhat = bst.predict(X)
+    acc = np.mean(np.argmax(yhat, axis=1) == y)
+    print(f"acc: {acc}")
+
+
+# In[9]:
+
 
 if __name__ == "__main__":
     with open("ex0.txt") as f:
@@ -360,10 +371,4 @@ if __name__ == "__main__":
     plt.scatter(X, yhat, label='yhat')
     plt.legend()
     plt.show()
-
-
-# In[ ]:
-
-
-
 
