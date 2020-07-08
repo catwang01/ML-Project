@@ -1,14 +1,12 @@
 [toc]
 
-# ML 学习笔记 7 xgboost
+# ML 学习笔记-7-XGBoost-1-原论文解读
 
-虽然都将 XGBoost 和 GDBT 放起来比较。但是在学习完两个模型之后，感觉两个的思路还是不太一样的。XGBoost 感觉更像 ID3、C4.5 之类的决策树。
-
-只不过有了不同的增益度量，还有系统上的优化。
+虽然都将 XGBoost 和 GBDT 放起来比较。但是在学习完两个模型之后，个人感觉 XGBoost 最创新的地方是使用了新的基学习器，它没有像 GBDT 一样直接使用 CART 作为基学习器，而是对 CART 进行了修改。
 
 ## 修改CART树 
 
-XGBoost 的论文一开始就做了一系列的推导，目的是为了得出新的增益度量来代表原来的 CART 树中的 Gini Index 或样本方差。
+XGBoost 的论文一开始就做了一系列的推导，目的是为了得出新的增益度量（也就是损失函数）来替换 CART 树中的 Gini Index 或样本方差。
 
 因此，个人认为 XGBoost 的一个贡献是提出了新增益指标计算方法。这个增益指标和其它的增益指标如 Gini Index 不同的是，这个增益指标是在 Boosting 过程中推导出来的，可以说是对 Boosting 方法有着天然的亲合性。虽然也可以在 Boosting 的过程中使用原来的增益指标如 Gini Index，但是这些指标得到的 loss 会比 XGBoost 的新增益指标得到的 loss 要大，因此效果没有 XGBoost 好。
 
@@ -32,7 +30,7 @@ $$
 
 ### 新增益度量的推导
 
-首先，XGBoost 使用的也是可加模型 + 前向分布算法。这个 GDBT 相同
+首先，XGBoost 使用的也是可加模型 + 前向分布算法。这个 GBDT 相同
 
 其模型的形式为 
 
@@ -168,9 +166,15 @@ L_{split} = \frac{1}{2} \left[
 \right] - \gamma
 $$ 
 
-用这个指标来代表 CART 树中原来的 Gini index 或样本方差来生成 CART 树。
+**注意：上式中 $G_I = G_L + G_R$ ,  $H_I = H_L + H_R$ ，利用这个关系可以简化计算。**
 
-注意上式中 $G_I = G_L + G_R$ ,  $H_I = H_L + H_R$ ，利用这个关系可以简化计算。
+上式中，$L_{split}$ 越大，分裂后损失降低的越小。可以定义某个结点 $I$ 处的损失为
+
+$$
+score = - \frac{G_{I}^2}{H_{I} + \lambda} 
+$$ 
+
+用这个来代替 CART 树中的 Gini index 或样本方差，可以用来确定最佳分裂结点和最佳分裂值。
 
 ### 防止过拟合：shrinkage 和列采样
 
@@ -222,7 +226,7 @@ Exact Greedy Algorithm 尝试将所有的样本都当作分割点来进行测试
 
 这个就是 Approximate Greedy Algorithm
 
-Approximate Greedy Algorithm 在实现起来有两种。一种是 local 和 一种是 global 的。
+Approximate Greedy Algorithm 有两种实现方式。一种是 local 和 一种是 global 的。
 
 两者的区别是 local 的每次划分完需要再次划分。而 global 的只划分一次。
 
