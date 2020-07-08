@@ -1,4 +1,6 @@
 .ipynb_checkpoints/
+.idea
+
 # Created by https://www.toptal.com/developers/gitignore/api/vscode,vim,python,pycharm
 # Edit at https://www.toptal.com/developers/gitignore?templates=vscode,vim,python,pycharm
 
