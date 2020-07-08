@@ -73,24 +73,25 @@ class MSE(Loss):
 
 # In[3]:
 
+
 class CrossEntropyWithLogits(Loss):
     
-    @staticmethod
-    def softmax(x):
-        c = np.max(x, axis=0)
+    def softmax(self, x):
+        c = np.max(x, axis=1, keepdims=True)
         exp_x = np.exp(x-c) 
-        sum_x = np.sum(exp_x, axis=0)
-        return exp_x / (sum_x + 10-5)
-        
-    
+        sum_x = np.sum(exp_x, axis=1, keepdims=True)
+        return exp_x / (sum_x + 10e-5)
+
     def predict(self, y, logits):
-        return -np.mean(np.sum(y * np.log(CrossEntropyWithLogits.softmax(logits)), axis=0))
+        return -np.mean(np.sum(y * np.log(self.softmax(logits)), axis=0)) 
 
     def gradient(self, y, logits):
-        return (logits - y) / y.shape[0]
+        p = self.softmax(logits)
+        return (p - y) / y.shape[0]
 
     def hessian(self, y, logits):
-        return np.ones_like(y) / y.shape[0]
+        p = self.softmax(logits)
+        return p * (1 - p) / y.shape[0]
 
 
 # ## 结点类
@@ -120,7 +121,7 @@ class TreeNode:
 
 
 class XGBoostBaseLearner:
-    def __init__(self, loss=None, lambda_=0, gamma=0, max_depth=10, min_err_decrease=1e-5, min_samples_split=2):
+    def __init__(self, loss=None, lambda_=10e-5, gamma=0, max_depth=10, min_err_decrease=1e-5, min_samples_split=2):
         self.loss = loss
         if self.loss is None:
             self.loss = MSE()
@@ -132,6 +133,7 @@ class XGBoostBaseLearner:
         self.min_samples_split = min_samples_split
         self.cached_data = None
         self.depth = 0 # 回归树的深度
+        self.n_classes = None # for multi-classfication
 
     def split(self, data, split_feat_idx, split_sample_idx):
         split_idx = list(data['features'][split_feat_idx]).index(split_sample_idx)
@@ -160,13 +162,17 @@ class XGBoostBaseLearner:
         best_split_feat_idx = None
         best_split_sample_idx= None
 
-        G_I = np.sum(self.cached_data['gradient'][sample_indices])
-        H_I = np.sum(self.cached_data['hessian'][sample_indices])
+        G_I = np.sum(self.cached_data['gradient'][sample_indices], axis=0)
+        H_I = np.sum(self.cached_data['hessian'][sample_indices], axis=0)
         loss_before_split =  - G_I**2 / (H_I + self.lambda_)
 
         for feat_idx in range(n_features):
-            G_L, G_R = 0, G_I
-            H_L, H_R = 0, H_I
+            if self.n_classes:
+                G_L, G_R = np.zeros((self.n_classes,)), G_I
+                H_L, H_R = np.zeros((self.n_classes,)), H_I
+            else:
+                G_L, G_R = 0, G_I
+                H_L, H_R = 0, H_I
             for sample_j in data['features'][feat_idx][:-1]:
                 G_L += self.cached_data['gradient'][sample_j]
                 G_R -= self.cached_data['gradient'][sample_j]
@@ -176,7 +182,12 @@ class XGBoostBaseLearner:
                 loss_L =  - G_L ** 2 / (H_L + self.lambda_)
                 loss_R =   - G_R ** 2 / (H_R + self.lambda_)
                 err_decrease = loss_before_split - (loss_L + loss_R) + 2 * self.gamma
-                if err_decrease > best_err_decrease:
+                if self.n_classes is not None:
+                    if np.any(err_decrease > best_err_decrease):
+                        best_err_decrease = err_decrease
+                        best_split_feat_idx = feat_idx
+                        best_split_sample_idx = sample_j
+                else:
                     best_err_decrease = err_decrease
                     best_split_feat_idx = feat_idx
                     best_split_sample_idx = sample_j
@@ -193,10 +204,16 @@ class XGBoostBaseLearner:
 
         split_feat_idx, split_sample_idx, best_err_decrease = self.choose_best_split_feature(data)
         # 节点的 loss 减少过小
-        if best_err_decrease < self.min_err_decrease:
-            root.output = self.compute_output(data)
-            self.depth = max(self.depth, depth)
-            return root
+        if self.n_classes is not None:
+            if np.any(best_err_decrease < self.min_err_decrease):
+                root.output = self.compute_output(data)
+                self.depth = max(self.depth, depth)
+                return root
+        else:
+            if best_err_decrease < self.min_err_decrease:
+                root.output = self.compute_output(data)
+                self.depth = max(self.depth, depth)
+                return root
 
         root.split_feat_idx = split_feat_idx
         root.split_feat_val = self.cached_data['X'][split_sample_idx, split_feat_idx]
@@ -208,7 +225,7 @@ class XGBoostBaseLearner:
 
     def compute_output(self, data):
         sample_idx = data['sample_idx']
-        return - np.sum(self.cached_data['gradient'][sample_idx]) / (np.sum(self.cached_data['hessian'][sample_idx]) + self.lambda_)
+        return - np.sum(self.cached_data['gradient'][sample_idx], axis=0) / (np.sum(self.cached_data['hessian'][sample_idx], axis=0) + self.lambda_)
 
     def preprocess(self, X, y, yhat):
         """
@@ -227,6 +244,8 @@ class XGBoostBaseLearner:
             'hessian': self.loss.hessian(y, yhat)
         }
 
+        if y.ndim == 2:
+            self.n_classes = y.shape[1]
         n_samples, n_features = X.shape
     
         # 用一个 dict 来表示 data
@@ -252,8 +271,7 @@ class XGBoostBaseLearner:
             return self._predict(node.left, x)
         else:
             return self._predict(node.right, x)
-
-
+        
     def predict(self, X):
         yhat = np.array([self._predict(self.tree, x) for x in X])
         return yhat
@@ -262,7 +280,6 @@ class XGBoostBaseLearner:
 # ## 测试
 
 # In[6]:
-
 
 if __name__ == "__main__":
     with open("ex0.txt") as f:
@@ -281,7 +298,7 @@ if __name__ == "__main__":
     plt.show()
 
 
-# In[13]:
+# In[ ]:
 
 
 if __name__ == "__main__":
@@ -290,14 +307,16 @@ if __name__ == "__main__":
     data = load_iris()
     X = data['data']
     y = data['target']
-    y_onehot = OneHotEncoder(sparse=False).fit_transform(y[np.newaxis, :])
+    y_onehot = OneHotEncoder(sparse=False).fit_transform(y[:, np.newaxis])
     
     bst = XGBoostBaseLearner(loss=CrossEntropyWithLogits())
-    yhat = bst.fit(X, y_onehot)
-    acc = np.mean(np.argmax(yhat) == np.argmax(y))
+    bst.fit(X, y_onehot)
+    yhat = bst.predict(X)
+    acc = np.mean(np.argmax(yhat, axis=1) == y)
+    print(f"acc: {acc}")
 
 
-# In[7]:
+# In[ ]:
 
 
 class XGBoost:
@@ -324,8 +343,7 @@ class XGBoost:
         return yhat
 
 
-# In[12]:
-
+# In[ ]:
 
 if __name__ == "__main__":
     with open("ex0.txt") as f:
