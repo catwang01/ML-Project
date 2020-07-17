@@ -2,32 +2,36 @@
 
 # XGBoost面试题
 
-## 1. XGBoost和GDBT有什么不同
+## 1. XGBoost和GBDT有什么不同
 
-1. 基分类器： - XGBoost支持 CART树，也支持线性分类器，此时 XGBoost 相当于带 L_1 和 L_2 正则化的 Linear Regression(for regression) 或 Logistic Regression(for classification)
-    - GDBT 只支持 CART树。
+1. 基分类器： 
+    - >XGBoost 支持 CART树，也支持线性分类器，此时 XGBoost 相当于带 L_1 和 L_2 正则化的 Linear Regression(for regression) 或 Logistic Regression(for classification) 
+    - 这段是网上抄的，但是感觉说的不是很有道理。实际上，个人认为它们的基分类器最大的区别应该是目标函数的不同。
+    - GBDT 只支持 CART树。
+
 2. 导数信息
     - XGBoost用到了二阶信息
-    - GDBT只用到了一阶信息
+    - GBDT只用到了一阶信息
+
 3. 正则项
-    - XGBoost使用了正则项。由两部分组成，一部分是对叶结点做出的惩罚，另一部分是对每个叶结点上的输出分数的惩罚。
-    - GDBT 没有使用正则项
+    - XGBoost使用了正则项。由两部分组成，一部分是对叶结点数量做出的惩罚，另一部分是对每个叶结点上的输出分数的惩罚。
+    - GBDT 没有使用正则项
 
 4. 列采样
     - XGBoost使用了类似于 RandomForest 的列采样以减少过拟合
-    - GDBT没有使用
+    - GBDT没有使用
 
 5. 缺失值处理
     - XGBoost有缺失值处理。会尝试将缺失值分到左右的结点上去并选择使用损失减少最多的那个作为缺失值的分类。
-    - GDBT 没有缺失值处理
+    - GBDT 没有缺失值处理
 
 6. 并行化
-    - XGBoost可以在特征级别上进行并行化
-    - GDBT不行。
+    - XGBoost可以在**特征级别**上进行并行化
+    - GBDT不行。（其实个人认为 GBDT 也可以在特征级别上进行并行化，只需要借鉴 XGBoost 的那部分就可以了）
 
 ## 2. XGBoost为什么可以并行
 
-XGBoost的并行不同每棵树进行并行，它本质上还是 Boosting 方法，所以不能完成每个基分类器的并行训练。
+XGBoost的并行不是每棵树进行并行，它本质上还是 Boosting 方法，所以不能完成每个基分类器的并行训练。
 
 XGBoost的并行指的是特征粒度的并行，不是tree粒度的并行。XGBoost在选取最佳分割点的时候不同的特征可以分别计算，最后选择最优的那个特征来进行分割。
 
@@ -41,15 +45,11 @@ XGBoost的并行指的是特征粒度的并行，不是tree粒度的并行。XGB
 
 3. 列采样。XGBoost中使用了 Random Forest 中的列采样，在防止过拟合的同时，也可以减少计算量（因为可以少算一些特征）
 
-4. 通过将数据划分为 block，XGBoost可以实现 block 级别的并行，提高效率。
+4. 对特征粒度进行并行。 
 
 5. cache aware accesss。XGBoost在为了避免cache miss使用了数据预取的计算。对于 Approximate Greedy Algorithm 来说，还可以调整合适的 blocksize 以减少 cache miss
 
-6. out of core computation
-    - block 的数据压缩。对列进行数据压缩。对行使用16位 int 来存储，并且只存储 index 的 offset，可以减少数据大小。.
-    - block sharding 将 block 中的数据保存在不同的磁盘中，以提高吞吐。
-
-## 4. XGBoost防止过拟合
+## 4. XGBoost如何防止过拟合
 
 1. 目标函数添加正则项。正则项分为两个部分，一个是对叶结点数量的惩罚，一个是对每个叶结点上输出分数的惩罚。
 2. 列采样，即可以防止过拟合，还可以减少需要计算分裂点的特征数量。
@@ -75,7 +75,7 @@ $$
 L_{split} = \frac{1}{2}[\frac{G_L}{H_L+\lambda} + \frac{G_R}{H_R+\lambda}  - \frac{G}{H+\lambda}]  - \gamma
 $$ 
 
-2. 分割点的选取采用了类型于 RandomForest 中的列采样计算，随机选取一些特征作为候选特征，而非使用全部特征。
+2. 分割特征的选取采用了类型于 RandomForest 中的列采样计算，随机选取一些特征作为候选特征，而非使用全部特征。
 
 3. 具体的选取算法有 Exact Greedy Algorithm 和 Approximate Greedy Algorithm。而 Approximate Greedy Algorithm 需要对样本进行分桶。分桶是通过加权二阶导数来进行的。Approximate Greedy Algorithm 还有 global 和 local 划分的区别。 
 
